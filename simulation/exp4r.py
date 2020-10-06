@@ -10,23 +10,25 @@ from src.actions import AgroActions
 
 # Inputs
 RECORD_BEST_EXPERT = True
-TIME_HORIZON = 25
-ACTIONS, COSTS = AgroActions().create_actions([0, 1, 4, 7], [0, 15], year=2019)
+TIME_HORIZON = 1000
+DELTA = .1
+RHO = None
+ACTIONS, COSTS = AgroActions().create_actions([0, 1, 4, 7], [0, 15], year=2019)  # Year will be overridden
 EXPERTS = ([UniformExpert(ACTIONS)]
            + [Expert(ACTIONS) for _ in range(3)]
            + [NoActionExpert(ACTIONS)]
            + [WofostExpert(ACTIONS)]
-           + [PerturbedWofostExpert(ACTIONS, 1e-2)]
-           + [PerturbedWofostExpert(ACTIONS, 1.0)]
+           + [PerturbedWofostExpert(ACTIONS, .01)]
+           + [PerturbedWofostExpert(ACTIONS, .1)]
            + [ComplementaryWofostExpert(ACTIONS)]
            + [MinWofostExpert(ACTIONS)]
            + [MaxWofostExpert(ACTIONS)]
-           + [PerturbedMaxWofostExpert(ACTIONS, 1e-2)]
-           + [PerturbedMaxWofostExpert(ACTIONS, 1.0)])
+           + [PerturbedMaxWofostExpert(ACTIONS, .01)]
+           + [PerturbedMaxWofostExpert(ACTIONS, .1)])
 
 # Initialization
 env = Environment(ACTIONS, EXPERTS, RECORD_BEST_EXPERT)
-exp4r = Exp4R(ACTIONS, EXPERTS, TIME_HORIZON)
+exp4r = Exp4R(ACTIONS, EXPERTS, TIME_HORIZON, DELTA, RHO)
 
 # Algorithm
 for _ in tqdm(range(TIME_HORIZON)):
