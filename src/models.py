@@ -63,7 +63,7 @@ class WofostExpert(Expert):
 
 
 class PerturbedWofostExpert(WofostExpert):
-    def __init__(self, actions, noise_scale=1.0):
+    def __init__(self, actions, noise_scale=.1):
         super().__init__(actions)
         if not isinstance(noise_scale, float):
             raise TypeError('noise_scale must be float')
@@ -72,9 +72,19 @@ class PerturbedWofostExpert(WofostExpert):
         self.noise_scale = noise_scale
 
     def give_advice(self):
-        advice = self.yields / np.sum(self.yields)
-        advice = advice + np.random.default_rng().normal(0, self.noise_scale, self.n_actions)
-        advice = np.clip(advice, 0, 1e3)
+        original_advice = self.yields / np.sum(self.yields)
+        advice = np.zeros(self.n_actions)
+        advice_sum = 0
+        n_sampling = 0
+        max_n_sampling = 5
+        while advice_sum < 1e-3:
+            if n_sampling < max_n_sampling:
+                n_sampling += 1
+                advice = original_advice + np.random.default_rng().normal(0, self.noise_scale, self.n_actions)
+                advice = np.clip(advice, 0, 1e3)
+                advice_sum = np.sum(advice)
+            else:
+                advice = np.ones(self.n_actions)
         advice = advice / np.sum(advice)
         return advice
 
@@ -112,7 +122,7 @@ class MaxWofostExpert(WofostExpert):
 
 
 class PerturbedMaxWofostExpert(WofostExpert):
-    def __init__(self, actions, noise_scale=1.0):
+    def __init__(self, actions, noise_scale=.1):
         super().__init__(actions)
         if not isinstance(noise_scale, float):
             raise TypeError('noise_scale must be float')
@@ -122,10 +132,20 @@ class PerturbedMaxWofostExpert(WofostExpert):
 
     def give_advice(self):
         idx = np.argmax(self.yields)
+        original_advice = np.zeros(self.n_actions)
+        original_advice[idx] = 1
         advice = np.zeros(self.n_actions)
-        advice[idx] = 1
-        advice = advice + np.random.default_rng().normal(0, self.noise_scale, self.n_actions)
-        advice = np.clip(advice, 0, 1e3)
+        advice_sum = 0
+        n_sampling = 0
+        max_n_sampling = 5
+        while advice_sum < 1e-3:
+            if n_sampling < max_n_sampling:
+                n_sampling += 1
+                advice = original_advice + np.random.default_rng().normal(0, self.noise_scale, self.n_actions)
+                advice = np.clip(advice, 0, 1e3)
+                advice_sum = np.sum(advice)
+            else:
+                advice = np.ones(self.n_actions)
         advice = advice / np.sum(advice)
         return advice
 
@@ -139,13 +159,13 @@ class Wofost:
         site_file_name = 'site.cab'
         config_file_name = 'WLP_NPK.conf'
 
-        soildata = CABOFileReader(os.path.join(data_dir, soil_file_name))
-        sitedata = CABOFileReader(os.path.join(data_dir, site_file_name))
-        cropdata = CABOFileReader(os.path.join(data_dir, crop_file_name))
+        soil_data = CABOFileReader(os.path.join(data_dir, soil_file_name))
+        site_data = CABOFileReader(os.path.join(data_dir, site_file_name))
+        crop_data = CABOFileReader(os.path.join(data_dir, crop_file_name))
         config = os.path.join(data_dir, config_file_name)
 
-        params = ParameterProvider(cropdata, sitedata, soildata)
-        latitude, longitude = 51.97, 5.67
+        params = ParameterProvider(crop_data, site_data, soil_data)
+        latitude, longitude = 51.97, 5.67  # Wageningen, Netherlands
         wdp = NASAPowerWeatherDataProvider(latitude, longitude)
 
         return params, wdp, config
@@ -155,7 +175,7 @@ class Wofost:
         wofost = Engine(params, wdp, agromanagement, config)  # WLP_NPK
         wofost.run_till_terminate()
         r = wofost.get_summary_output()
-        return r[0]["TWSO"]  # Can be changed according to crop choice
+        return r[0]['TWSO']  # Can be changed according to crop choice
 
 
 class Exp4R:
@@ -191,8 +211,10 @@ class Exp4R:
 
         if rho is None:
             rho = sqrt(log(self.n_experts) / self.n_actions / self.T)
-        elif not isinstance(rho, float):
-            raise TypeError('rho must be float')
+        else:
+            warnings.warn('For a customized value of rho, theoretical results may not hold.')
+            if not isinstance(rho, float):
+                raise TypeError('rho must be float')
         if not 0 < rho <= 1 / self.n_actions:
             raise ValueError(f'rho must be positive and no larger than {1 / self.n_actions}')
         else:
@@ -217,8 +239,8 @@ class Exp4R:
     def get_advice(self):
         for expert_id in range(self.n_experts):
             self.advice[expert_id] = self.experts[expert_id].give_advice()
-            assert 1 - np.sum(self.advice[expert_id]) <= 1e-5, \
-                f'incorrect advice distribution, expert_id: {expert_id}'
+            assert abs(1 - np.sum(self.advice[expert_id])) <= 1e-2, \
+                f'Improper advice, expert_id: {expert_id}\nadvice:{self.advice[expert_id]}'
 
     def combine_advice(self):
         self.action_pmf = ((1 - self.n_actions * self.rho) * np.matmul(self.expert_weights, self.advice)
@@ -243,15 +265,18 @@ class Exp4R:
     def threshold_test(self):
         self.get_expert_thresholds()
         expert_weight_ranking = np.flip(self.expert_weights.argsort())
+        log_expert_weights = np.log(self.expert_weights)
         pairwise_ranking = []
         for i in range(self.n_experts-1):
             better_id = expert_weight_ranking[i]
             j = self.n_experts - 1
             while j > i:
                 worse_id = expert_weight_ranking[j]
-                diff = log(self.expert_weights[better_id]) - log(self.expert_weights[worse_id])
+                diff = log_expert_weights[better_id] - log_expert_weights[worse_id]
                 if diff > self.expert_thresholds[better_id]:
                     pairwise_ranking.append((better_id, worse_id))
+                else:
+                    break
                 j -= 1
         if len(pairwise_ranking) > 0:
             message = 'Estimated pairwise expert ranking as follows:'
@@ -273,7 +298,8 @@ class Environment:
         self.actions = actions
         self.n_actions = len(self.actions)
         self.experts = experts
-        # Wofost related
+
+        # WOFOST-related
         params, wdp, config = Wofost.init_wofost()
         self.wofost_params = [params, wdp, config]
         self.yields = np.empty(self.n_actions)
@@ -294,7 +320,7 @@ class Environment:
 
     @staticmethod
     def sample_random_year():
-        # Sample year from a non-stationary distribution
+        """Sample year from a non-stationary distribution."""
         random.seed(time.time())
         years_complete_weather = list(range(1984, 2000)) + [2002] + list(range(2004, 2016)) + [2017, 2019]
         year = random.choice(years_complete_weather)
@@ -303,11 +329,12 @@ class Environment:
     def update(self):
         year = self.sample_random_year()
         self.actions, _ = AgroActions().create_actions([0, 1, 4, 7], [0, 15], year=year)
-        # Run Wofost to obtain yield for each action
+        # Run WOFOST to obtain yield for each action
         self.yields = np.zeros(self.n_actions)
         for i, action in enumerate(self.actions):
             self.yields[i] = Wofost.run_wofost(action, *self.wofost_params)
-
+            assert self.yields[i] >= 0, 'Yield cannot be negative'
+        # Provide yield information to experts in case they need it
         for expert in self.experts:
             expert.update(self.yields)
 
@@ -320,7 +347,7 @@ class Environment:
         return self.current_rewards[action_id]
 
     def reward_wofost(self, action_id):
-        self.current_rewards = self.yields / np.sum(self.yields)
+        self.current_rewards = self.yields / np.max(self.yields)
         return self.current_rewards[action_id]
 
     def add_history(self, action_id, reward, expert_weights, advice):
